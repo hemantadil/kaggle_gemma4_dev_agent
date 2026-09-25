@@ -1,0 +1,9 @@
+# Stage 1 Execution Budgets & Timeouts
+# Tuned for Kaggle's 12-hour overall evaluation limit across all test tasks.
+# max_time_minutes is the primary hard safety governor: 129 * 4.5m = 9.6 hours max.
+# High turn and tool limits allow the agent full freedom to iterate without premature cutoff.
+evaluation:
+  timeout_seconds: 45      # Max seconds per run_command execution
+  max_tool_calls: 70       # High ceiling to never bottleneck exploration or verification
+  max_time_minutes: 4.5    # Hard wall-clock limit per task (primary budget governor)
+  max_turns: 80            # High reasoning turn ceiling
