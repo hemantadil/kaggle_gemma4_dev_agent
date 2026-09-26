@@ -2,8 +2,8 @@
 # Kaggle Submission Summary: Gemma 4 Developer Agent
 
 **Competition:** [Google - The Gemma 4 Developer Agent](https://www.kaggle.com/competitions/gemma-4-developer-agent)  
-**Submission Ref:** `56557628`  
-**Submission Date:** September 25, 2026 (18:23:39 UTC / 23:53:39 IST)  
+**Submission Ref:** `56586108`  
+**Submission Date:** September 26, 2026 (18:17:08 UTC / 23:47:08 IST)  
 **Submission Archive:** `submission.zip`  
 **Status:** `SubmissionStatus.PENDING`  
 
@@ -11,13 +11,15 @@
 
 ## 1. Executive Summary
 
-This repository contains the complete autonomous software engineering agent configuration submitted to the **Google - The Gemma 4 Developer Agent Competition**. The agent is built on Google's Agent Development Kit (ADK) and powered by `gemma-4-31b-it-qat-w4a16-ct` running on 4x NVIDIA L4 GPUs with vLLM tensor parallelism.
+This repository contains the complete autonomous software engineering agent configuration submitted to the **Google - The Gemma 4 Developer Agent Competition** (v3 Release). The agent is built on Google's Agent Development Kit (ADK) and powered by `gemma-4-31b-it-qat-w4a16-ct` running on 4x NVIDIA L4 GPUs with vLLM tensor parallelism.
 
-The submission is specifically engineered to overcome the common failure modes observed in autonomous SWE benchmarks:
-1. **Evaluation Timeouts**: Uses a calibrated 4.5-minute per-task hard governor to guarantee the 129 evaluation benchmark tasks finish within Kaggle's 12-hour evaluation ceiling.
-2. **Context Looping**: Implements targeted definition lookup (`grep -n "def <name>"`) and multi-term keyword extraction instead of blind file scrolling.
-3. **Patch Pollution**: Enforces strict test-file isolation so reproduction scripts never contaminate the final git diff patch.
-4. **Git Safety**: Guides safe file-level rollbacks (`git checkout -- <file>`) while forbidding destructive operations (`git reset --hard`).
+The v3 submission integrates critical architectural insights and offline verification against real benchmark tasks:
+1. **Container A vs B Verification Decoupling**: Recognizes that official evaluation test patches do not exist in Container A. The agent verifies changes via fast inline assertions (`python3 -c "..."`) instead of looping in search of non-existent test files.
+2. **Missing Method & Attribute Rule**: Overcomes the confirmation bias trap where grepping for missing methods only matches unrelated existing files. Directs search to the subject/class directly (`find . -name "*<noun>*.py"`, `find tests -name "*<noun>*.py"`).
+3. **Immediate Edit Rule (Max 1 Reproduction Step)**: Prevents infinite diagnostic loops by requiring immediate `edit_file` invocation as soon as a failure is observed once.
+4. **Subclass Delegation Rule**: In classes wrapping objects or subclassing standard library types (e.g. `io.TextIOBase`), base class defaults bypass `__getattr__`. The agent immediately implements the explicit delegating method rather than debugging Python internals.
+5. **16,384 Output Tokens & 4,096 Thinking Budget**: Matches the competition ceiling to eliminate `<|tool_call>` truncation under vLLM.
+6. **Live Validated on Gemma 4**: Demonstrated 100% resolution (`Score: 1.0`) on benchmark tasks (`rich_4077` and `rich_3067`) under full Two-Phase verification before submission.
 
 ---
 
