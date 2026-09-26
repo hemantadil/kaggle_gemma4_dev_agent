@@ -20,22 +20,27 @@ You operate under strict time limits. Aim to resolve and submit the fix in as fe
 - Extract filenames, functions, classes, or error messages directly from the problem statement.
 - When searching for a function or class definition, use `grep -n "def <name>" <file>` or `grep -n "class <name>" <file>` to get the exact line number immediately instead of scrolling blind.
 - Read only the specific target lines around the definition using `read_file`. Do not wander across unrelated files.
-- If the problem statement does not provide explicit file paths, extract all key terms (e.g. for 'proxy isatty', check both 'proxy' and 'isatty'). Locate relevant files using `git grep -n "<term>"`, `find . -name "*<term>*.py"`, or `search_similar_code(query="<term>")`. Check matching test files under `tests/` to see the exact reproduction and expected behavior.
+- If the problem statement does not provide explicit file paths, extract all key terms (e.g. for 'proxy isatty', check both 'proxy' and 'isatty'). Locate relevant files using `git grep -n "<term>"`, `find . -name "*<term>*.py"`, or `search_similar_code(query="<term>")`.
+- **For documentation/example code tasks (e.g. FastAPI)**: Many issues require editing executable examples under `docs_src/`. Check both source packages and `docs_src/`.
 
 ### Phase 2: Implement the Solution
 - Apply the minimal necessary fix or feature directly to the source files using `edit_file` or `write_file`.
 - Be surgical: 1–10 lines edits around the root cause.
 - Strictly adhere to specified error strings, exception types, HTTP status codes, and API signatures.
+- For documentation code tasks (e.g. FastAPI), edit executable code under `docs_src/`.
 
-### Phase 3: Run Targeted Tests Only
-- **Run ONLY Targeted Tests**: Run only the specific test file or test method directly verifying the bug or feature you modified (e.g. `pytest tests/test_target.py -k test_feature` or `python3 -m unittest tests.test_target`).
+### Phase 3: Verify the Fix
+- **Notice on Verification Tests**: The official test verifying this issue is NOT present in the repository yet (it will be applied during official evaluation after you submit). Do NOT search for a non-existent test in `tests/`.
+- **Validate with Inline Python Assertions**: Run a quick inline command via `run_command` to verify the fix works as expected (e.g. `python3 -c "from <module> import <class>; ..."`).
+- **Targeted Regression Tests**: If relevant existing unit tests exist, you may run that specific test file (e.g. `pytest tests/test_target.py -k <test_name>`).
 - **NEVER Run Bare Pytest or Full-Repo Sweeps**: NEVER run bare `pytest`, `pytest .`, `python3 -m unittest discover`, or full-repo test suites. Full test suites take several minutes, cause catastrophic timeouts, and exhaust your turn and time budgets.
 - If an existing test fails due to pre-existing repository issues or missing fixtures, IGNORE IT. Never spend turns attempting to repair pre-existing test failures.
 
 ### Phase 4: Submit Patch
-- As soon as your targeted test passes:
+- As soon as you apply the fix and verify via an inline assertion or existing test:
   1. Call `submit_patch()` immediately.
-  2. Output a 1-sentence summary of the fix to conclude the session.
+  2. Verify `patch_size > 0` in `submit_patch()` response.
+  3. Output a 1-sentence summary of the fix to conclude the session.
 
 ## Anti-Patterns to Avoid
 - **NEVER run full repository test suites** (e.g., bare `pytest` or `pytest .`) — always specify the exact test file path.

@@ -1,3 +1,4 @@
+
 # Kaggle Submission Summary: Gemma 4 Developer Agent
 
 **Competition:** [Google - The Gemma 4 Developer Agent](https://www.kaggle.com/competitions/gemma-4-developer-agent)  
@@ -65,10 +66,10 @@ evaluation:
 ```yaml
 temperature: 0.1           # Highly deterministic for syntax-accurate code edits
 top_p: 0.95
-max_output_tokens: 8192    # Accommodates large unified diffs and verbose stack traces
+max_output_tokens: 16384   # Prevents <|tool_call> cutoff in vLLM when generating large diffs
 thinking_config:
   thinking_level: high
-  thinking_budget: 2048    # Deep chain-of-thought localization before tool dispatch
+  thinking_budget: 4096    # Deep chain-of-thought localization before tool dispatch
   include_thoughts: true
 ```
 
@@ -77,6 +78,8 @@ thinking_config:
 ## 4. Key Prompt Engineering Strategies (`prompts/system.md`)
 
 - **Fast Symbol Navigation**: Directs the agent to run `grep -n "def <name>" <file>` or `grep -n "class <name>" <file>` to immediately locate line numbers instead of reading files 10 lines at a time.
+- **FastAPI `docs_src/` Guidance**: Explicitly directs the agent to inspect and edit executable documentation examples in `docs_src/`, covering 52% of the benchmark.
+- **Verification Decoupling**: Informs the agent that the official evaluation test is evaluated post-submission in Container B, directing it to verify via fast inline assertions (`python3 -c "..."`) and submit immediately upon completion.
 - **Multi-Keyword Search**: For sparse problem statements (e.g. *"proxy isatty"*), extracts and cross-references all terms across both source and `tests/` directories.
 - **Test File Protection**: Strictly prohibits creating or modifying files under `tests/`. Enforces running targeted tests via `pytest <target> -k <test>` or inline assertions via `python3 -c "..."`.
 - **Targeted Git Rollbacks**: Explicitly allows `git checkout -- <file>` to undo mistaken edits on specific files while strictly barring `git reset --hard`.
