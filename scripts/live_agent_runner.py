@@ -147,6 +147,43 @@ def load_system_prompt() -> str:
     with open(SYSTEM_PROMPT_FILE, "r", encoding="utf-8") as f:
         return f.read()
 
+def apply_patch_resilient(workspace: Path, patch_content: str) -> bool:
+    """Applies patch using resilient fallback passes conforming to official harness."""
+    if not patch_content:
+        return True
+    if not patch_content.endswith("\n"):
+        patch_content += "\n"
+
+    passes = [
+        "git apply --unsafe-paths --recount --ignore-space-change --ignore-whitespace -",
+        "git apply --unsafe-paths -3 -",
+        "git apply --unsafe-paths -p1 -",
+        "git apply --unsafe-paths -p0 -",
+        "patch -p1 --batch --forward -l -"
+    ]
+
+    for cmd in passes:
+        proc = subprocess.run(
+            cmd,
+            input=patch_content,
+            text=True,
+            shell=True,
+            cwd=workspace,
+            capture_output=True
+        )
+        if proc.returncode == 0:
+            return True
+
+    return False
+
+def extract_test_targets(test_patch: str) -> list[str]:
+    """Finds test files modified by test_patch."""
+    targets = []
+    for line in test_patch.splitlines():
+        if line.startswith("+++ b/"):
+            targets.append(line.replace("+++ b/", "").strip())
+    return targets
+
 def run_agent_on_task(instance_id: str, base_url: str, api_key: str, model_name: str, max_turns: int = 15):
     print("=" * 70)
     print(f"[*] Starting Live Agent Run for: {instance_id}")
@@ -169,24 +206,16 @@ def run_agent_on_task(instance_id: str, base_url: str, api_key: str, model_name:
             tar.extractall(path=workspace)
 
         subprocess.run("git add -A && git commit -m 'baseline' -q", shell=True, cwd=workspace)
-
-        # Apply test patch so tests exist for agent to run
-        test_patch = task.get("test_patch", "")
-        if not test_patch.endswith("\n"): test_patch += "\n"
-        subprocess.run("git apply --recount --ignore-space-change --ignore-whitespace -", input=test_patch, text=True, shell=True, cwd=workspace)
+        subprocess.run("git tag baseline_tag", shell=True, cwd=workspace)
+        # In Container A, test_patch is NOT applied — agent operates strictly on base_commit!
 
         tools = CompetitionTools(repo_dir=workspace, graph_path=GRAPHS_DIR / f"{instance_id}.json")
 
         system_instruction = load_system_prompt()
-        # Build workspace file list matching swegemma harness
-        repo_files = []
-        for p in workspace.rglob("*.py"):
-            rel = str(p.relative_to(workspace))
-            if not rel.startswith(".") and not rel.startswith("tests"):
-                repo_files.append(rel)
-            if len(repo_files) >= 30:
-                break
-        files_str = "\n".join(f"- {f}" for f in repo_files[:25])
+        # Build workspace layout matching swegemma harness (find . -maxdepth 3)
+        res = subprocess.run("find . -maxdepth 3", shell=True, cwd=workspace, capture_output=True, text=True)
+        raw_entries = [l for l in res.stdout.splitlines() if not any(x in l for x in [".git", "__pycache__", ".pyc"])]
+        files_str = "\n".join(raw_entries[:150])
 
         graph_file = GRAPHS_DIR / f"{instance_id}.json"
         graph_hint = ""
@@ -217,8 +246,7 @@ Please investigate, locate the bug, apply the fix with edit_file, verify with ta
         ]
 
         patch_submitted = False
-        last_tool_sig = None
-        repeat_count = 0
+        recent_tool_sigs = []
 
         for turn in range(1, max_turns + 1):
             print(f"\n--- Turn {turn}/{max_turns} ---")
@@ -227,7 +255,8 @@ Please investigate, locate the bug, apply the fix with edit_file, verify with ta
                 messages=messages,
                 tools=TOOL_DEFINITIONS,
                 tool_choice="auto",
-                temperature=0.1
+                temperature=0.1,
+                max_tokens=16384
             )
 
             choice = response.choices[0]
@@ -254,20 +283,14 @@ Please investigate, locate the bug, apply the fix with edit_file, verify with ta
                     args = {}
 
                 current_sig = f"{fn_name}:{raw_args}"
-                if current_sig == last_tool_sig:
-                    repeat_count += 1
-                else:
-                    repeat_count = 0
-                last_tool_sig = current_sig
-
                 print(f"[Tool Call]: {fn_name}({args})")
                 
-                # Check duplicate loop
-                if repeat_count >= 2:
+                # Check duplicate or cyclic loop on commands
+                if current_sig in recent_tool_sigs[-3:] and fn_name == "run_command":
                     result = json.dumps({
                         "status": "error",
                         "error_type": "DuplicateCallError",
-                        "error_message": f"Duplicate call to '{fn_name}' with identical parameters detected. Please do not repeat the exact same call. Change your parameters, inspect different lines, apply edits with edit_file, or run a test."
+                        "error_message": f"Duplicate call to '{fn_name}' detected. You have already executed this command and observed the result. Do NOT repeat it. Apply your code fix to the target file now using edit_file."
                     })
                 # Execute tool
                 elif fn_name == "read_file":
@@ -278,10 +301,8 @@ Please investigate, locate the bug, apply the fix with edit_file, verify with ta
                     result = tools.write_file(args.get("filepath", ""), args.get("content", ""))
                 elif fn_name == "run_command":
                     cmd = args.get("command", "")
-                    # Prepend python virtualenv if running python/pytest
-                    if "pytest" in cmd or "python" in cmd:
-                        cmd = f"PYTHONPATH={workspace} {ROOT_DIR}/.venv/bin/{cmd}"
-                    result = tools.run_command(cmd)
+                    wrapped_cmd = f"PATH={ROOT_DIR}/.venv/bin:$PATH PYTHONPATH={workspace}:$PYTHONPATH {cmd}"
+                    result = tools.run_command(wrapped_cmd)
                 elif fn_name == "search_similar_code":
                     result = tools.search_similar_code(args.get("query", ""), args.get("k", 5))
                 elif fn_name == "get_code_neighbors":
@@ -295,6 +316,7 @@ Please investigate, locate the bug, apply the fix with edit_file, verify with ta
                     result = json.dumps({"status": "error", "error_message": f"Unknown tool '{fn_name}'"})
 
                 print(f"[Tool Response]: {result[:200]}...")
+                recent_tool_sigs.append(current_sig)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -305,25 +327,44 @@ Please investigate, locate the bug, apply the fix with edit_file, verify with ta
                 print("\n[+] submit_patch() was executed! Concluding agent turns.")
                 break
 
-        # Verification
+        # Verification (Container B Simulation)
         print("\n" + "=" * 70)
-        print("[*] Running Verification on Generated Patch...")
+        print("[*] Running Verification on Generated Patch (Container B Simulation)...")
         print("=" * 70)
-        diff_res = subprocess.run("git diff HEAD~1", shell=True, cwd=workspace, capture_output=True, text=True)
-        print(f"Generated Git Diff Size: {len(diff_res.stdout)} chars")
-        
-        # Run pytest
-        test_targets = [l.replace("+++ b/", "").strip() for l in test_patch.splitlines() if l.startswith("+++ b/")]
+        subprocess.run("git add -N . 2>/dev/null || true", shell=True, cwd=workspace)
+        diff_res = subprocess.run("git diff baseline_tag", shell=True, cwd=workspace, capture_output=True, text=True)
+        agent_patch = diff_res.stdout
+        print(f"Generated Git Diff Size: {len(agent_patch)} chars")
+        if not agent_patch.strip():
+            print("[!] Warning: Agent did not generate any changes in the repository.")
+        else:
+            print("--- Agent Patch Preview ---")
+            print(agent_patch[:1000] + ("\n... [truncated]" if len(agent_patch) > 1000 else ""))
+            print("---------------------------")
+
+        # Apply ground truth test_patch
+        test_patch = task.get("test_patch", "")
+        if test_patch:
+            print("[+] Applying official benchmark test patch...")
+            applied = apply_patch_resilient(workspace, test_patch)
+            if not applied:
+                print("[!] Warning: Could not cleanly apply test_patch to workspace.")
+            else:
+                print("[+] test_patch applied cleanly.")
+
+        # Run pytest on target test files
+        test_targets = extract_test_targets(test_patch)
         targets_str = " ".join(test_targets) if test_targets else "tests/"
-        pytest_cmd = f"PYTHONPATH={workspace} {ROOT_DIR}/.venv/bin/python -m pytest {targets_str} -p no:anyio -q"
+        pytest_cmd = f"PATH={ROOT_DIR}/.venv/bin:$PATH PYTHONPATH={workspace}:$PYTHONPATH pytest {targets_str} -p no:anyio -q"
+        print(f"[+] Executing pytest: {pytest_cmd}")
         test_run = subprocess.run(pytest_cmd, shell=True, cwd=workspace, capture_output=True, text=True)
 
         if test_run.returncode == 0:
-            print(f">>> [TASK RESOLVED: PASS] Score: 1.0! All tests passed! <<<")
+            print(f"\n>>> [TASK RESOLVED: PASS] Score: 1.0! All tests passed! <<<")
             return True
         else:
-            print(f">>> [TASK UNRESOLVED: FAIL] Exit code: {test_run.returncode} <<<")
-            print("Failure snippet:\n", test_run.stdout[-500:])
+            print(f"\n>>> [TASK UNRESOLVED: FAIL] Exit code: {test_run.returncode} <<<")
+            print("Failure snippet:\n", test_run.stdout[-800:] if test_run.stdout else test_run.stderr[-800:])
             return False
 
     finally:
@@ -332,10 +373,14 @@ Please investigate, locate the bug, apply the fix with edit_file, verify with ta
 def main():
     parser = argparse.ArgumentParser(description="Run live autonomous agent against competition task")
     parser.add_argument("--id", default="rich_4077", help="Task instance_id to solve")
-    parser.add_argument("--base-url", default=os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"), help="OpenAI-compatible base URL")
-    parser.add_argument("--api-key", default=os.environ.get("OMLX_API_KEY", "omlx"), help="API key")
-    parser.add_argument("--model", default=os.environ.get("OMLX_MODEL", "gemma-4-31b-it-qat-w4a16-ct"), help="Model name")
-    parser.add_argument("--max-turns", type=int, default=12, help="Max interaction turns")
+    default_base_url = os.environ.get("OPENROUTER_BASE_URL") or os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8000/v1")
+    default_api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OMLX_API_KEY", "omlx")
+    default_model = os.environ.get("OPENROUTER_MODEL") or os.environ.get("OMLX_MODEL", "google/gemma-4-31b-it")
+
+    parser.add_argument("--base-url", default=default_base_url, help="OpenAI-compatible base URL")
+    parser.add_argument("--api-key", default=default_api_key, help="API key")
+    parser.add_argument("--model", default=default_model, help="Model name")
+    parser.add_argument("--max-turns", type=int, default=20, help="Max interaction turns")
 
     args = parser.parse_args()
     run_agent_on_task(
